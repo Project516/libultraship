@@ -1238,7 +1238,14 @@ void GfxRenderingAPIOGL::CopyFramebuffer(int fb_dst_id, int fb_src_id, int srcX0
 
     glBindFramebuffer(GL_FRAMEBUFFER, mFrameBuffers[mCurrentFrameBuffer].fbo);
 
-    glReadBuffer(GL_BACK);
+    // Same rule as the read buffer chosen above: GL_BACK only names a buffer on
+    // the default framebuffer. Asking a framebuffer object for it is an
+    // INVALID_OPERATION on every GLES implementation, including WebGL.
+    if (mFrameBuffers[mCurrentFrameBuffer].fbo == 0) {
+        glReadBuffer(GL_BACK);
+    } else {
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+    }
 
     if (mLastScissorEnabled != 1) {
         mLastScissorEnabled = 1;
@@ -1256,6 +1263,14 @@ void GfxRenderingAPIOGL::ReadFramebufferToCPU(int fb_id, uint32_t width, uint32_
     // (8 bytes) on some drivers (NVIDIA), not the packed 2 bytes the spec implies.
     // Reading as RGBA8 and converting matches the DX11 path's approach.
     glBindFramebuffer(GL_FRAMEBUFFER, mFrameBuffers[fb_id].fbo);
+
+    // The read buffer is per-framebuffer state, so name it rather than trusting
+    // whatever the last blit left behind.
+    if (mFrameBuffers[fb_id].fbo == 0) {
+        glReadBuffer(GL_BACK);
+    } else {
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+    }
 
     std::vector<uint8_t> rgba8(width * height * 4);
     glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba8.data());
