@@ -29,6 +29,11 @@
 #include <SDL2/SDL_opengles2.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#endif
+
 #include "ship/window/gui/Gui.h"
 
 #ifdef _WIN32
@@ -233,6 +238,22 @@ void GfxWindowBackendSDL2::SetFullscreenImpl(bool on, bool call_callback) {
         toggleNativeMacOSFullscreen(mWnd);
     }
     mFullScreen = on;
+#elif defined(__EMSCRIPTEN__)
+    // Browser: ask for fullscreen on the canvas directly, with no resize strategy. SDL's own path
+    // assumes the canvas becomes screen-sized, but the browser's fullscreen styling decides the real
+    // box (letterboxing, notch, page zoom), which left SDL scaling the mouse against a size the canvas
+    // never had. With the default strategy the browser sizes the element, the window resize callback
+    // registered in Init() pushes that size into SDL, and input stays 1:1. The request is only honored
+    // from inside an input event, so Emscripten defers it to the next one, and the user can leave with
+    // Escape; mFullScreen therefore follows the document's fullscreen state in HandleEvents.
+    if (on) {
+        EMSCRIPTEN_RESULT result = emscripten_request_fullscreen("#canvas", EM_TRUE);
+        if (result != EMSCRIPTEN_RESULT_SUCCESS && result != EMSCRIPTEN_RESULT_DEFERRED) {
+            SPDLOG_ERROR("Failed to request fullscreen from the browser ({})", (int)result);
+        }
+    } else {
+        emscripten_exit_fullscreen();
+    }
 #else
     if (SDL_SetWindowFullscreen(
             mWnd, on ? (Ship::Context::GetInstance()->GetConsoleVariables()->GetInteger(CVAR_SDL_WINDOWED_FULLSCREEN, 0)
@@ -246,6 +267,7 @@ void GfxWindowBackendSDL2::SetFullscreenImpl(bool on, bool call_callback) {
     }
 #endif
 
+#ifndef __EMSCRIPTEN__ // the canvas goes back to its CSS size on its own (see the resize callback in Init)
     if (!on) {
         auto conf = Ship::Context::GetInstance()->GetConfig();
         mWindowWidth = conf->GetInt("Window.Width", 640);
@@ -259,6 +281,7 @@ void GfxWindowBackendSDL2::SetFullscreenImpl(bool on, bool call_callback) {
         SDL_SetWindowPosition(mWnd, posX, posY);
         SDL_SetWindowSize(mWnd, mWindowWidth, mWindowHeight);
     }
+#endif
 
     if (mOnFullscreenChanged != nullptr && call_callback) {
         mOnFullscreenChanged(on);
@@ -368,7 +391,28 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
         flags = flags | SDL_WINDOW_METAL;
     }
 
+#ifdef __EMSCRIPTEN__
+    double canvasW = 0.0, canvasH = 0.0;
+    emscripten_get_element_css_size("#canvas", &canvasW, &canvasH);
+    if (canvasW > 0 && canvasH > 0) {
+        mWindowWidth = (int)canvasW;
+        mWindowHeight = (int)canvasH;
+    }
+#endif
     mWnd = SDL_CreateWindow(title, posX, posY, mWindowWidth, mWindowHeight, flags);
+#ifdef __EMSCRIPTEN__
+    em_ui_callback_func onCanvasResize = [](int, const EmscriptenUiEvent*, void* userData) -> EM_BOOL {
+        auto backend = static_cast<GfxWindowBackendSDL2*>(userData);
+        double w = 0.0;
+        double h = 0.0;
+        emscripten_get_element_css_size("#canvas", &w, &h);
+        if (w > 0 && h > 0 && backend->mWnd != nullptr) {
+            SDL_SetWindowSize(backend->mWnd, (int)w, (int)h);
+        }
+        return EM_TRUE;
+    };
+    emscripten_set_resize_callback(EMSCRIPTEN_EVENT_TARGET_WINDOW, this, EM_FALSE, onCanvasResize);
+#endif
 #ifdef _WIN32
     // Get Windows window handle and use it to subclass the window procedure.
     // Needed to circumvent SDLs DPI scaling problems under windows (original does only scale *sometimes*).
@@ -388,7 +432,12 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
     }
 
     if (use_opengl) {
+#ifdef __EMSCRIPTEN__
+        // Browser: window geometry is CSS points; the canvas backing store is scaled by the device pixel ratio.
+        SDL_GetWindowSize(mWnd, &mWindowWidth, &mWindowHeight);
+#else
         SDL_GL_GetDrawableSize(mWnd, &mWindowWidth, &mWindowHeight);
+#endif
 
         if (startFullScreen) {
             SetFullscreenImpl(true, false);
@@ -505,7 +554,7 @@ void GfxWindowBackendSDL2::SetMouseCallbacks(bool (*onMouseButtonDown)(int btn),
 }
 
 void GfxWindowBackendSDL2::GetDimensions(uint32_t* width, uint32_t* height, int32_t* posX, int32_t* posY) {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
     SDL_GetWindowSize(mWnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
 #else
     SDL_GL_GetDrawableSize(mWnd, static_cast<int*>((void*)width), static_cast<int*>((void*)height));
@@ -586,7 +635,7 @@ void GfxWindowBackendSDL2::HandleSingleEvent(SDL_Event& event) {
         case SDL_WINDOWEVENT:
             switch (event.window.event) {
                 case SDL_WINDOWEVENT_SIZE_CHANGED:
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
                     SDL_GetWindowSize(mWnd, &mWindowWidth, &mWindowHeight);
 #else
                     SDL_GL_GetDrawableSize(mWnd, &mWindowWidth, &mWindowHeight);
@@ -623,6 +672,18 @@ void GfxWindowBackendSDL2::HandleEvents() {
     // resync fullscreen state
 #ifdef __APPLE__
     auto nextFullscreenState = isNativeMacOSFullscreenActive(mWnd);
+    if (mFullScreen != nextFullscreenState) {
+        mFullScreen = nextFullscreenState;
+        if (mOnFullscreenChanged != nullptr) {
+            mOnFullscreenChanged(mFullScreen);
+        }
+    }
+#elif defined(__EMSCRIPTEN__)
+    // The browser enters fullscreen on the next input event after the request and can leave it on
+    // its own (Escape), so follow the document's state rather than the request.
+    EmscriptenFullscreenChangeEvent fullscreenStatus;
+    const bool nextFullscreenState = emscripten_get_fullscreen_status(&fullscreenStatus) == EMSCRIPTEN_RESULT_SUCCESS &&
+                                     fullscreenStatus.isFullscreen;
     if (mFullScreen != nextFullscreenState) {
         mFullScreen = nextFullscreenState;
         if (mOnFullscreenChanged != nullptr) {

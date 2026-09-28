@@ -484,6 +484,10 @@ std::string Context::GetAppDirectoryPath(std::string appName) {
     }
 #endif
 
+#ifdef __EMSCRIPTEN__
+    return "/storage";
+#endif
+
 #ifdef NON_PORTABLE
     if (appName.empty()) {
         appName = GetInstance()->mShortName;

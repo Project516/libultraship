@@ -202,7 +202,14 @@ ResourceManager::LoadResourceAsync(const ResourceIdentifier& identifier, bool lo
 
     return mThreadPool->submit_task(
         [this, identifier, loadExact, initData]() -> std::shared_ptr<IResource> {
-            return LoadResourceProcess(identifier, loadExact, initData);
+            // A pool worker has nothing above it, so an escaping exception ends
+            // the process instead of this one load. Report it and fail the load.
+            try {
+                return LoadResourceProcess(identifier, loadExact, initData);
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("Failed to load resource: {}", e.what());
+                return nullptr;
+            }
         },
         priority);
 }
@@ -319,7 +326,12 @@ std::shared_future<std::shared_ptr<std::vector<std::shared_ptr<IResource>>>>
 ResourceManager::LoadResourcesAsync(const ResourceFilter& filter, BS::priority_t priority) {
     return mThreadPool->submit_task(
         [this, filter]() -> std::shared_ptr<std::vector<std::shared_ptr<IResource>>> {
-            return LoadResourcesProcess(filter);
+            try {
+                return LoadResourcesProcess(filter);
+            } catch (const std::exception& e) {
+                SPDLOG_ERROR("Failed to load resources: {}", e.what());
+                return nullptr;
+            }
         },
         priority);
 }
@@ -339,16 +351,20 @@ std::shared_ptr<std::vector<std::shared_ptr<IResource>>> ResourceManager::LoadRe
 
 void ResourceManager::DirtyResources(const ResourceFilter& filter) {
     mThreadPool->submit_task([this, filter]() -> void {
-        auto list = GetArchiveManager()->ListFiles(filter.IncludeMasks, filter.ExcludeMasks);
+        try {
+            auto list = GetArchiveManager()->ListFiles(filter.IncludeMasks, filter.ExcludeMasks);
 
-        for (const auto& key : *list.get()) {
-            auto resource = GetCachedResource({ key, filter.Owner, filter.Parent });
-            // If it's a resource, we will set the dirty flag, else we will just unload it.
-            if (resource != nullptr) {
-                resource->Dirty();
-            } else {
-                UnloadResource({ key, filter.Owner, filter.Parent });
+            for (const auto& key : *list.get()) {
+                auto resource = GetCachedResource({ key, filter.Owner, filter.Parent });
+                // If it's a resource, we will set the dirty flag, else we will just unload it.
+                if (resource != nullptr) {
+                    resource->Dirty();
+                } else {
+                    UnloadResource({ key, filter.Owner, filter.Parent });
+                }
             }
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("Failed to dirty resources: {}", e.what());
         }
     });
 }
