@@ -367,6 +367,16 @@ void GfxWindowBackendSDL2::Init(const char* gameName, const char* gfxApiName, bo
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
 #endif
 
+#ifdef __EMSCRIPTEN__
+    // SDL creates the context through EGL, and without an ES profile it leaves out the client
+    // version, which Emscripten then reads as 2 and answers with a WebGL1 context. The renderer
+    // and ImGui both compile "#version 300 es" shaders, so ask for the ES 3 client version that
+    // Emscripten maps onto WebGL2.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+#endif
+
 #ifdef _WIN32
     // Use high-resolution mTimer by default on Windows 10 (so that NtSetTimerResolution (...) hacks are not needed)
     mTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
