@@ -571,6 +571,10 @@ std::string Context::GetAppDirectoryPath(const std::string& appName) {
     }
 #endif
 
+#ifdef __EMSCRIPTEN__
+    return "/storage";
+#endif
+
 #ifdef NON_PORTABLE
     const std::string& effectiveAppName = appName.empty() ? GetRawInstance()->mShortName : appName;
     char* prefpath = SDL_GetPrefPath(NULL, effectiveAppName.c_str());
