@@ -189,7 +189,8 @@ jobs:
         path: build-cmake-x64/src/**/*.lib
         if-no-files-found: error
   build-windows-arm64:
-    runs-on: windows-latest
+    # windows-latest no longer ships the "Visual Studio 17 2022" generator this job asks for.
+    runs-on: windows-2022
     steps:
       - name: Install dependencies
         run: |
