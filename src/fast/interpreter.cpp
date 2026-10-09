@@ -3980,6 +3980,11 @@ bool gfx_set_timg_handler_rdp(F3DGfx** cmd0) {
                              reinterpret_cast<LPCSTR>(i), &module))) {
         return false;
     }
+#elif UINTPTR_MAX <= 0xFFFFFFFFu
+    // On 32-bit, real pointers live in this range too, so only an unresolved segment can be told apart.
+    if ((i & 1) && i == cmd->words.w1) {
+        return false;
+    }
 #else
     if (i <= 0x0FFFFFFF) {
         return false;
